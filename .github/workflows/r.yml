@@ -1,0 +1,344 @@
+            - name: Render Markdown
+  # You may pin to the exact commit or the version.
+  # uses: fionn/render-markdown@55e660b2c09bcb68b865ed9f55e927c5b104d279
+  uses: fionn/render-markdown@v0.0.6
+  with:
+    # GitHub API token
+    token: # optional
+    # Markdown file to render
+    markdown_file: # optional, default is README.md
+          
+
+---
+title: "RESULTADOS DE LA EVALUACIÓN DE CURSOS Y FACILITADORES — 2025B"
+author: "Gerencia de Evaluación"
+date: "`r format(Sys.Date(), '%d-%m-%Y')`"
+output: pdf_document
+header-includes:
+  - \usepackage{graphicx}
+  - \graphicspath{{C:/Users/pvicente.ULIBERTAD/Desktop/}}
+  - \usepackage{fancyhdr}
+  - \pagestyle{fancy}
+  - \fancyhf{}
+  - \rhead{\includegraphics[width=0.2\textwidth]{UL_logo.png}}
+  - \setlength{\headheight}{30pt}
+  - \cfoot{\thepage}
+  - \renewcommand{\footrulewidth}{0.4pt}
+params:
+  facilitator_mayus: "ARIEL SOLORIO GONZALEZ"
+  facilitator_minus: "Ariel Solorio Gonzalez"
+  curso: "PRICING"
+  curso_minus: "Pricing"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(knitr)
+library(ggplot2)
+library(readr)
+library(scales)
+library(stringr)
+
+# =========================
+# 1) CARGA DE LA BASE 2025B
+# =========================
+df <- read_csv("https://raw.githubusercontent.com/Pvichente/ECyF_2025/refs/heads/main/Cursos%20y%20Facilitadores_2025B_2.csv",
+               show_col_types = FALSE)
+
+# Considera solo encuestas completas
+if ("Finalizado" %in% names(df)) {
+  df <- df %>% filter(Finalizado == "Sí")
+}
+
+# Normaliza nombres clave
+stopifnot(all(c("Curso","Facilitador") %in% names(df)))
+df <- df %>% rename(CURSO = Curso, Facilitator = Facilitador)
+# --- Normalización robusta de claves de filtrado ---
+norm_txt <- function(x) {
+  x %>%
+    stringr::str_to_upper() %>%
+    stringr::str_replace_all("\\s+", " ") %>%
+    stringr::str_trim()
+}
+
+df <- df %>%
+  mutate(Facilitator_norm = norm_txt(Facilitator),
+         CURSO_norm       = norm_txt(CURSO))
+
+fac_param    <- norm_txt(params$facilitator_mayus)
+course_param <- norm_txt(params$curso)
+
+# =========================
+# 2) PARÁMETROS DE COLUMNAS
+# =========================
+# Por defecto (ajusta aquí si cambió el cuestionario)
+likert_cols   <- paste0("Var", 1:7)  # 7 afirmaciones
+claridad_var  <- "Var8"              # 1-6
+aplica_var    <- "Var9"              # 1-6
+reco_var      <- "Var20"             # 1-10 (NPS al facilitador)
+coment_var    <- "Var13"             # comentarios abiertos
+
+# Etiquetas Likert (como en el PDF 2025A)
+likert_labels <- c(
+  Var1 = "Inicia la sesión de clase a tiempo",
+  Var2 = "Vincula la sesión de clase con el prework",
+  Var3 = "Me incentiva a participar en clase",
+  Var4 = "Aclara las preguntas que se hacen en clase",
+  Var5 = "Plantea temas que ayudan a comprender la clase",
+  Var6 = "Logra un equilibrio entre su participación y la del grupo",
+  Var7 = "Tiene un buen control del grupo"
+)
+
+# Subconjunto por facilitador
+facilitator_data <- df %>% filter(Facilitator_norm == fac_param)
+
+# =========================
+# 3) UTILITARIOS GRÁFICOS
+# =========================
+likert_palette <- c("Muy en desacuerdo" = "#E74C3C",
+                    "En desacuerdo"    = "#F39C12",
+                    "De acuerdo"       = "#A9DFBF",
+                    "Muy de acuerdo"   = "#229954")
+
+plot_likert <- function(df_lk) {
+  ggplot(df_lk, aes(x = Pregunta, y = Porcentaje, fill = Respuesta)) +
+    geom_col(position = "stack") +       # <- cambio clave (antes era position = "fill")
+    coord_flip() +
+    scale_fill_manual(values = likert_palette, guide = guide_legend(nrow = 2)) +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                       limits = c(0, 1), expand = c(0, 0),
+                       breaks = seq(0, 1, 0.25)) +
+    labs(title = "Distribución de respuestas", x = "", y = "Porcentaje de respuestas") +
+    theme_minimal() +
+    theme(legend.position = "bottom",
+          legend.title = element_blank(),
+          legend.direction = "horizontal",
+          legend.text = element_text(size = 8),
+          legend.key.size = unit(0.4, "cm"),
+          legend.spacing.x = unit(0.8, 'cm'),
+          legend.box.margin = margin(5,5,5,5),
+          plot.margin = margin(10,10,100,10),
+          plot.title = element_text(hjust = 0.5))
+}
+
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+
+safe_density_plot <- function(data_num, xlab = "Calificación", xbreaks = 1:6, xlimits = c(1,6),
+                              mean_lines = list(), fill_alpha = 0.5, fill = "lightblue",
+                              ylab = "Frecuencia Kdensity") {
+  data_num <- suppressWarnings(as.numeric(data_num))
+  data_num <- data_num[!is.na(data_num)]
+  n <- length(data_num)
+
+  if (n >= 2 && sd(data_num) > 0) {
+    p <- ggplot(data.frame(x = data_num), aes(x)) +
+      geom_density(fill = fill, alpha = fill_alpha) +
+      labs(x = xlab, y = ylab) +
+      scale_x_continuous(limits = xlimits, breaks = xbreaks) +
+      theme_minimal()
+    ymax <- ggplot_build(p)$data[[1]]$y %>% max(na.rm = TRUE)
+  } else {
+    # Fallback si no hay suficientes puntos para densidad
+    p <- data.frame(x = data_num) %>%
+      count(x) %>%
+      ggplot(aes(x = x, y = n)) +
+      geom_col(alpha = 0.6) +
+      labs(x = xlab, y = "Frecuencia") +
+      scale_x_continuous(limits = xlimits, breaks = xbreaks) +
+      theme_minimal()
+    ymax <- ifelse(n > 0, max(table(data_num)), 1)
+  }
+
+  if (length(mean_lines)) {
+    for (ml in mean_lines) {
+      p <- p +
+        geom_vline(xintercept = ml$value, color = ml$color %||% "black", linewidth = 1.2) +
+        annotate("text", x = ml$value - 0.15, y = ymax * (ml$pos_y %||% 0.9),
+                 label = paste0(ml$label, ": ", ml$value),
+                 color = ml$color %||% "black", hjust = 1, size = 4, fontface = "bold")
+    }
+  }
+  p
+}
+```
+
+\begin{center}
+    \includegraphics[width=0.3\textwidth]{UL_logo.png}
+\end{center}
+
+Estimado `r params$facilitator_minus`,
+
+La evaluación docente es un pilar fundamental para el fortalecimiento de la calidad educativa en la Universidad de la Libertad. Estas evaluaciones permiten identificar fortalezas y áreas de oportunidad en la práctica docente, promoviendo la mejora continua y el desarrollo profesional del cuerpo académico.
+
+El presente documento recopila los resultados de la Evaluación de Cursos del trimestre 2025-B (mayo-julio) para el curso _`r params$curso_minus`_, basándose en las respuestas proporcionadas por los estudiantes.
+
+\newpage
+
+## REPORTE DE EVALUACIÓN DE `r params$facilitator_mayus`
+
+A) Distribución de respuestas a la pregunta: *¿Qué tan de acuerdo estás con las siguientes afirmaciones sobre tu facilitador?*
+
+*Distribución general de los facilitadores*
+
+A continuación se muestra la distribución general para todos los facilitadores de la UL respecto a qué tan de acuerdo están los estudiantes con las siguientes afirmaciones:
+
+```{r distribucion_general, echo=FALSE, fig.width=8, fig.height=4, dpi=300}
+df_likert_gen <- df %>%
+  select(all_of(c("Facilitator","CURSO", likert_cols))) %>%
+  pivot_longer(all_of(likert_cols), names_to = "Var", values_to = "Respuesta") %>%
+  tidyr::drop_na(Respuesta) %>%    # ← NUEVO: quita NA para que la barra llene 100%
+  mutate(Pregunta = recode(Var, !!!likert_labels)) %>%
+  group_by(Pregunta, Respuesta) %>%
+  summarise(Frecuencia = n(), .groups = "drop") %>%
+  group_by(Pregunta) %>%
+  mutate(Porcentaje = Frecuencia / sum(Frecuencia),
+         Respuesta = factor(Respuesta,
+                            levels = c("Muy en desacuerdo","En desacuerdo","De acuerdo","Muy de acuerdo")))
+
+print(plot_likert(df_likert_gen))
+
+
+```
+
+
+*Distribución del facilitador*
+
+A continuación se presenta la distribución correspondiente únicamente a los resultados del facilitador evaluado.
+
+```{r distribucion_facilitador, echo=FALSE, fig.width=8, fig.height=4, dpi=300}
+df_likert_fac <- df %>%
+  filter(Facilitator_norm == fac_param, CURSO_norm == course_param) %>%
+  select(all_of(likert_cols)) %>%
+  pivot_longer(everything(), names_to = "Var", values_to = "Respuesta") %>%
+  tidyr::drop_na(Respuesta) %>%    # ← NUEVO: misma lógica
+  mutate(Pregunta = recode(Var, !!!likert_labels)) %>%
+  group_by(Pregunta, Respuesta) %>%
+  summarise(Frecuencia = n(), .groups = "drop") %>%
+  group_by(Pregunta) %>%
+  mutate(Porcentaje = Frecuencia / sum(Frecuencia),
+         Respuesta = factor(Respuesta,
+                            levels = c("Muy en desacuerdo","En desacuerdo","De acuerdo","Muy de acuerdo")))
+
+print(plot_likert(df_likert_fac))
+
+```
+
+\newpage
+
+B) Del 1 al 6, siendo 1 nada claro y 6 muy claro ¿Cómo calificarías la claridad y organización de las clases impartidas por este facilitador?
+
+\begin{center}\textbf{Distribución de calificaciones del facilitador}\end{center}
+
+```{r claridad_organizacion, echo=FALSE, fig.width=8, fig.height=4, dpi=300}
+clar_vec_course <- { df %>% filter(CURSO_norm == course_param) }[[claridad_var]]
+clar_vec_fac    <- { df %>% filter(Facilitator_norm == fac_param, CURSO_norm == course_param) }[[claridad_var]]
+clar_vec_global <- df[[claridad_var]]
+
+prom_fac <- round(mean(as.numeric(clar_vec_fac), na.rm = TRUE), 1)
+prom_gl  <- round(mean(as.numeric(clar_vec_global), na.rm = TRUE), 1)
+
+print(safe_density_plot(
+  data_num = clar_vec_course,
+  xbreaks = 1:6, xlimits = c(1,6),
+  mean_lines = list(
+    list(value = prom_fac, color = "red",   label = "Promedio facilitador", pos_y = 0.9),
+    list(value = prom_gl,  color = "black", label = "Promedio UL",          pos_y = 0.8)
+  ),
+  fill = "lightblue"
+))
+```
+
+\newpage
+
+C) Del 1 al 6, siendo 1 nada y 6 totalmente, ¿Qué tanto pueden los ejemplos utilizados en el curso aplicarse en tu día a día?
+
+\begin{center}\textbf{Distribución de calificaciones del facilitador}\end{center}
+
+```{r aplicacion_ejemplos, echo=FALSE, fig.width=8, fig.height=4, dpi=300}
+apli_vec_course <- { df %>% filter(CURSO_norm == course_param) }[[aplica_var]]
+apli_vec_fac    <- { df %>% filter(Facilitator_norm == fac_param, CURSO_norm == course_param) }[[aplica_var]]
+apli_vec_global <- df[[aplica_var]]
+
+prom_fac_apli <- round(mean(as.numeric(apli_vec_fac), na.rm = TRUE), 1)
+prom_gl_apli  <- round(mean(as.numeric(apli_vec_global), na.rm = TRUE), 1)
+
+print(safe_density_plot(
+  data_num = apli_vec_course,
+  xbreaks = 1:6, xlimits = c(1,6),
+  mean_lines = list(
+    list(value = prom_fac_apli, color = "red",   label = "Promedio facilitador", pos_y = 0.9),
+    list(value = prom_gl_apli,  color = "black", label = "Promedio UL",          pos_y = 0.8)
+  ),
+  fill = "lightgreen"
+))
+
+```
+
+\newpage
+
+D) De acuerdo con la experiencia que has tenido ¿Qué tan probable es que recomiendes a este facilitador para impartir otros cursos?
+
+\begin{center}\textbf{Distribución de calificaciones del facilitador}\end{center}
+
+```{r recomendacion_facilitador, echo=FALSE, fig.width=8, fig.height=4, dpi=300}
+reco_vec_course <- { df %>% filter(CURSO_norm == course_param) }[[reco_var]]
+reco_vec_fac    <- { df %>% filter(Facilitator_norm == fac_param, CURSO_norm == course_param) }[[reco_var]]
+reco_vec_global <- df[[reco_var]]
+
+prom_fac_reco <- round(mean(as.numeric(reco_vec_fac), na.rm = TRUE), 1)
+prom_gl_reco  <- round(mean(as.numeric(reco_vec_global), na.rm = TRUE), 1)
+
+rng <- range(suppressWarnings(as.numeric(reco_vec_course)), na.rm = TRUE)
+xmax <- ifelse(is.finite(rng[2]) && rng[2] > 6, 10, 6)
+xbreaks <- 1:xmax
+
+print(safe_density_plot(
+  data_num = reco_vec_course,
+  xbreaks = xbreaks, xlimits = c(1, xmax),
+  mean_lines = list(
+    list(value = prom_fac_reco, color = "red",   label = "Promedio facilitador", pos_y = 0.9),
+    list(value = prom_gl_reco,  color = "black", label = "Promedio UL",          pos_y = 0.8)
+  ),
+  fill = "thistle"
+))
+
+```
+
+\newpage
+
+E) ¿Tienes algún comentario o recomendación sobre el curso?
+
+En esta sección se presentan los comentarios tal fueron compartidos por los estudiantes del curso.
+
+```{r comentarios, echo=FALSE}
+empties <- c("", ".", "-", "no", "No", "NO", "n/a", "N", "nada", "Nada", "ninguno", "Ninguno")
+
+fallback_col <- if ("Var11" %in% names(df)) "Var11" else coment_var
+
+comments_df <- df %>%
+  filter(Facilitator_norm == fac_param, CURSO_norm == course_param) %>%
+  transmute(Comments = dplyr::coalesce(.data[[coment_var]], .data[[fallback_col]])) %>%
+  mutate(Comments = stringr::str_trim(Comments)) %>%
+  filter(!is.na(Comments), !Comments %in% empties)
+
+if (nrow(comments_df) > 0) {
+  kable(comments_df, caption = "Comentarios de los estudiantes")
+} else {
+  cat("Sin comentarios abiertos para este curso/facilitador.")
+}
+
+```  
+
+
+# Recomendaciones de mejora
+
+Estimado `r params$facilitator_minus`,
+
+Reconocemos tu labor en el curso Pricing en la Universidad de la Libertad.
+
+Los resultados de la evaluación muestran un desempeño sobresaliente. La claridad y organización de las clases (5.8/6) y la aplicabilidad de los ejemplos (5.8/6) se encuentran muy por encima de los promedios institucionales. Asimismo, el nivel de recomendación (9.8/10) está entre los más altos de la universidad, lo que refleja el reconocimiento de los estudiantes hacia tu enseñanza.
+
+En los comentarios, los alumnos resaltan tu capacidad para explicar con claridad, la efectividad de las simulaciones y la utilidad práctica del curso. También destacan tu disposición y cercanía en el acompañamiento. Como áreas de mejora, sugieren ampliar el uso de simuladores, evitar repeticiones con contenidos de otros cursos como Business Models, y enriquecer el temario con más datos y cálculos para diversificar la experiencia.
+
+Tu contribución es valiosa para la Universidad de la Libertad. Con ligeros ajustes en la variedad de contenidos y el uso de herramientas prácticas, podrás fortalecer aún más un curso que ya es altamente valorado por los estudiantes.
